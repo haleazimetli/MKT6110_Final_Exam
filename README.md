@@ -60,5 +60,5 @@ After verifying the performance of the PID controller, the **LQR (Linear Quadrat
 ## 📝 Notes
 
 ```bash
-ffmpeg -i PI_ucus.mp4 -vf "fps=10,scale=600:-1:flags=lanczos" -c:v gif PI_ucus.gif
+
 ```
