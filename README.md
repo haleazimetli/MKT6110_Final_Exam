@@ -27,7 +27,7 @@ mav_project.slx
 By default, the Simulink model runs with the **PID controller**. The navigation module is also active during this mode.
 
 <p align="center">
-  <img src="images_readme/PI.png" width="600"/>
+  <img src="images_readme/Model.png" width="600"/>
 </p>
 
 **▶️ Simulation Preview (GIF):**  
