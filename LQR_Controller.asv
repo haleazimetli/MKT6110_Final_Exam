@@ -1,0 +1,229 @@
+
+
+% function S = LQR_Controller(u,P)
+% %--------------------------------------------------------------
+% % u = [state(12); Va_c; h_c; chi_c_deg; t]
+% % S = [δe δa δr δt]'   rad , rad , rad , 0-1
+% %--------------------------------------------------------------
+% x   = real(u(1:12));          t = u(16);
+% Va_c = u(13);  h_c = u(14);   chi_c = deg2rad(u(15));
+% 
+% %% ------- Kalıcı değişkenler
+% persistent int_h int_V
+% if isempty(int_h), int_h = 0; int_V = 0; end
+% if t==0, int_h = 0; int_V = 0; end
+% 
+% %% ------- Uzunlamasına sapmalar
+% h       = -x(3);
+% h_err   = h_c - h;
+% int_h   = sat(int_h + P.Ts*h_err , 100 , -100);
+% 
+% theta_f = sat( 0.4*atan(h_err/60) , 15*pi/180 , -15*pi/180 );
+% xi_lon  = [ x(4)          ;   ...  % u
+%             x(6)          ;   ...  % w
+%             x(11)         ;   ...  % q
+%             x(8)          ;   ...  % θ
+%             -x(3)         ];       % h
+% 
+% delta_e = -P.K_lon*xi_lon - P.Ki_h*int_h;          % ← δe (rad)
+% delta_e = sat(delta_e ,  P.delta_e_max , P.delta_e_min);
+% 
+% %% ------- Throttle PI (Va tuttur)
+% Va      = x(4);                         % |V|≈u
+% err_V   = Va_c - Va;
+% int_V   = sat(int_V + P.Ts*err_V , 60 , -60);
+% k_p_t = 1.3;   k_i_t = 0.10;
+% delta_t = sat( P.u_trim_lon(2) + k_p_t*err_V + k_i_t*int_V , 1 , 0 );
+% 
+% %% ------- Yanal sapmalar
+% xi_lat  = [ x(5); x(10); x(12); x(7); x(9) ] - [0;0;0;0;chi_c];
+% u_lat   = -P.K_lat*xi_lat + P.u_trim_lat;
+% delta_a = sat(u_lat(1) , P.delta_a_max , P.delta_a_min);
+% delta_r = sat(u_lat(2) , P.delta_r_max , P.delta_r_min);
+% 
+% S          = zeros(28,1);
+% S(1:4)     = [delta_e; delta_a; delta_r; delta_t];
+% S(5:16)    = [0;0;-h_c; Va_c; 0;0; 0;0; chi_c; 0;0;0];
+% S(17:28)   = x;
+% end
+% 
+% function z = sat(u,up,lo), z = min(max(u,lo),up); end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+% function y = LQR_Controller(u,P)
+% % u = [state(12); Va_c; h_c; chi_c_deg; t]
+% % y = 28×1 = [S(4); x_cmd(12); xhat(12)]
+% % RB – 2025
+% 
+% t = u(16);
+% 
+% persistent int_V      ; if isempty(int_V),      int_V = 0; end
+% persistent theta_filt ; if isempty(theta_filt), theta_filt = 0; end
+% persistent x_int      ; if t==0,                x_int = 0; end
+% persistent log        ; if t==0, log = []; end
+% 
+% y = zeros(28,1);
+% 
+% %% ------------------------------------------------ 1. Referanslar
+% x      = u(1:12);
+% Va_c   = u(13);
+% h_c    = u(14);
+% chi_c  = deg2rad(u(15));
+% 
+% h      = -x(3);
+% h_err  = h_c - h;                                % + → yüksel
+% 
+% gamma_cmd  = atan(h_err/60);
+% theta_ref  = sat(0.35*gamma_cmd, 15*pi/180, -15*pi/180);
+% 
+% err_V  = Va_c - u(4);
+% 
+% alpha  = 0.90;                                   % θ alçak-geçirgen
+% theta_filt = alpha*theta_filt + (1-alpha)*theta_ref;
+% 
+% %% ------------------------------------------------ 2. Sapma vektörleri
+% x_lon   = [ x(4); x(6); x(11); x(8);  -x(3);  x_int ];
+% xref_lon= [ Va_c; 0; 0; theta_filt;   h_c;    0     ];
+% xi_lon  = x_lon - xref_lon;
+% 
+% x_lat   = [ x(5); x(10); x(12); x(7); x(9) ];
+% xref_lat= [ 0;    0;     0;     0;   chi_c ];
+% xi_lat  = x_lat - xref_lat;
+% 
+% %% ------------------------------------------------ 3. Uzunlamasına kumandalar
+% u_lon   = -P.K_lon * xi_lon + P.u_trim_lon;      % δe*,δt*(q-damp)
+% Se_cmd  = u_lon(1);
+% 
+% % -------- Throttle---------------------
+% St_ff   = P.u_trim_lon(2);          % trim gaz (~0.35-0.4)
+% k_p_t   = 0.5;                      % önce 1.2
+% k_i_t   = 0.015;                     % önce 0.05
+% 
+% % <-- entegratörü güvenli büyüt
+% int_V   = sat(int_V + P.Ts*err_V , 40 , -40);
+% 
+% St_PI   = k_p_t*err_V + k_i_t*int_V;
+% St_qd   = -0.01 * x(11);            % çok küçük q-damp
+% 
+% St_unsat = St_ff + St_PI + St_qd;   % tek formül
+% S_t      = sat(St_unsat , 1 , 0);   % asıl gaz
+% 
+% %% ------------------------------------------------ 4. Yanal kumandalar
+% u_lat   = -P.K_lat*xi_lat + P.u_trim_lat;
+% S_a     = sat(u_lat(1), P.delta_a_max, P.delta_a_min);
+% S_r     = sat(u_lat(2), P.delta_r_max, P.delta_r_min);
+% 
+% %% ------------------------------------------------ 5. Elevator & irtifa integrali
+% K_q       = 0.35;                              % 5 çok yüksekti, 1-1.5 yeter
+% S_e_unsat = Se_cmd - K_q*x(11);
+% S_e       = sat(S_e_unsat, P.delta_e_max, P.delta_e_min);
+% 
+% sat_margin = 0.9*P.delta_e_max;
+% if abs(S_e) < sat_margin
+%     x_int = sat(x_int + 0.02*P.Ts*h_err , 25 , -25);   % ±30 m·s
+% end
+% x_int = x_int - 2*(Se_cmd - sat(Se_cmd,P.delta_e_max,P.delta_e_min));
+% 
+% % ---- throttle anti-wind-up (küçük) -----------------------------
+% if abs(St_unsat-S_t) > 1e-3
+%     int_V = int_V - 0.2*(St_unsat-S_t);
+% end
+% int_V  = sat(int_V , 25 , -25);     
+% %% ------------------------------------------------ 6. Çıkış & log
+% S = [S_e; S_a; S_r; S_t];
+% x_cmd = [0;0;-h_c; Va_c; 0;0; 0;0; chi_c; 0;0;0];
+% 
+% y(1:4)   = S;
+% y(5:16)  = x_cmd;
+% y(17:28) = x;
+% 
+% log = [log ; t, Va_c, u(4), St_PI, St_qd, St_unsat, S_t];
+% if t > 0
+%     assignin('base','log_debug',log);            % tek değişkenlik log
+% end
+% end
+% 
+% % ---------------- yardımcı fonksiyonlar -----------------------------
+% function z = sat(u,up,lo)
+%    z = min(max(u,lo),up);
+% end
+function y = LQR_Controller(u,P)
+  % u = [x(12); Va_c; h_c; chi_c_deg; t]
+  x    = u(1:12);
+  Va_c = u(13);
+  h_c  = u(14);
+  chi_c= deg2rad(u(15));
+  t    = u(16);
+
+  %% 1) integratör durumunu güncelle
+  persistent z_int
+  if isempty(z_int) || t==0
+    z_int = 0;
+  end
+  h    = -x(3);             % h pozitif yukarı
+  herr = h_c - h;
+  errV     = Va_c - x(4);
+  z_int = z_int + P.Ts * herr;   % x_int_dot = h_err
+
+  %% 2) sapma vektörleri
+  gamma_cmd = atan(herr/60);
+  theta_ref = sat(0.4*gamma_cmd,15*pi/180,-15*pi/180);
+
+  x_lon    = [ x(4); x(6); x(11); x(8); -x(3) ];
+  xref_lon = [ Va_c; 0; 0; theta_ref; h_c ];
+  %xi_lon   = [ x_lon - xref_lon ; z_int ];  % 6×1
+  xi_lon    = [ x_lon ; z_int ];
+
+  G_lon = [ P.K_e,  P.Ki_h ;     % 1×6
+          P.K_t,  P.Ki_t ];
+
+  x_lat    = [ x(5); x(10); x(12); x(7); x(9) ];
+  xref_lat = [ 0;0;0;0;chi_c ];
+  xi_lat   = x_lat - xref_lat;             % 5×1
+
+  %% 3) LQR geri besleme
+  u_lon_ext = -P.K_e  * x_lon  - P.Ki_h * z_int  + P.u_trim_lon(1);  % 2×1
+
+  delta_e = sat( u_lon_ext(1), P.delta_e_max, P.delta_e_min );
+
+    persistent intV
+    if isempty(intV) || t==0, intV = 0; end
+  intV     = intV + P.Ts*errV;
+  kpt = 1.2; kit = 0.05;      % kaba ayar
+
+  delta_t = sat( u_lon_ext(2),           0,         1        );
+
+
+  u_lat = -P.K_lat * xi_lat + P.u_trim_lat;  % 2×1
+  delta_a = sat( u_lat(1), P.delta_a_max, P.delta_a_min );
+  delta_r = sat( u_lat(2), P.delta_r_max, P.delta_r_min );
+
+  %% 4) paketle ve çık
+  S     = [delta_e; delta_a; delta_r; delta_t];
+  x_cmd = [0;0;-h_c; Va_c; 0;0; 0;0; chi_c; 0;0;0];
+  y     = [S; x_cmd; x];
+end
+
+function z = sat(u,up,lo)
+  z = min(max(u,lo),up);
+end

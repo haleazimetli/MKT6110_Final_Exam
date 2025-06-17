@@ -1,0 +1,233 @@
+clear all;
+P.gravity = 9.8;
+   
+%physical parameters of airframe
+P.mass = 1.56;
+P.Jx   = 0.1147;
+P.Jy   = 0.0576;
+P.Jz   = 0.1712;
+P.Jxz  = 0.0015;
+
+% aerodynamic coefficients
+P.M             = 50;
+P.epsilon       = 0.1592;
+P.alpha0        = 0.4712;
+P.rho           = 1.2682;
+P.c             = 0.3302;
+P.b             = 1.4224;
+P.S_wing        = 0.2589;
+P.S_prop        = 0.0314;
+P.k_motor       = 30;
+P.C_L_0         = 0.28;
+P.C_L_alpha     = 3.45;
+P.C_L_q         = 0.0;
+P.C_L_delta_e   = -0.36;
+P.C_D_0         = 0.03;
+P.C_D_q         = 0.0;
+P.C_D_delta_e   = 0.0;
+P.C_M_0         = 0.0;
+P.C_M_alpha     = -0.38;
+P.C_M_q         = -3.6;
+P.C_M_delta_e   =  0.5;
+P.C_Y_0         = 0.0;
+P.C_Y_beta      = -0.98;
+P.C_Y_p         = -0.26;
+P.C_Y_r         = 0.0;
+P.C_Y_delta_a   = 0.0;
+P.C_Y_delta_r   = -0.17;
+P.C_ell_0       = 0.0;
+P.C_ell_beta    = -0.12;
+P.C_ell_p       = -0.26;
+P.C_ell_r       = 0.14;
+P.C_ell_delta_a = 0.08;
+P.C_ell_delta_r = 0.105;
+P.C_n_0         = 0.0;
+P.C_n_beta      = 0.25;
+P.C_n_p         = 0.022;
+P.C_n_r         = -0.35;
+P.C_n_delta_a   = 0.06;
+P.C_n_delta_r   = -0.032;
+P.C_prop        = 1;
+
+
+% wind parameters
+P.wind_n = 0;
+P.wind_e = 0;
+P.wind_d = 0;
+P.L_wx = 1250;
+P.L_wy = 1750;
+P.L_wz = 1750;
+P.sigma_wx = 1; 
+P.sigma_wy = 1;
+P.sigma_wz = 1;
+P.Va0 = 10;
+
+% autopilot sample rate
+P.Ts = 0.01;
+
+% compute trim conditions using 'mavsim_chap5_trim.mdl'
+P.Va    = 13;         % desired airspeed (m/s)
+gamma = 0*pi/180;  % desired flight path angle (radians)
+R     = 0;         % desired radius (m) - use (+) for right handed orbit, 
+                    %                          (-) for left handed orbit
+% first cut at initial conditions
+P.pn0    = 0;  % initial North position
+P.pe0    = 0;  % initial East position
+P.pd0    = 0;  % initial Down position (negative altitude)
+P.u0     = P.Va; % initial velocity along body x-axis
+P.v0     = 0;  % initial velocity along body y-axis
+P.w0     = 0;  % initial velocity along body z-axis
+P.phi0   = 0;  % initial roll angle
+P.theta0 = 0;  % initial pitch angle
+P.psi0   = 0;  % initial yaw angle
+P.p0     = 0;  % initial body frame roll rate
+P.q0     = 0;  % initial body frame pitch rate
+P.r0     = 0;  % initial body frame yaw rate
+
+% run trim commands
+[x_trim, u_trim]=compute_trim('mavsim_trim',P.Va,gamma,R);
+P.u_trim = u_trim;
+P.x_trim = x_trim;
+
+% set initial conditions to trim conditions
+% initial conditions
+P.pn0    = 0;  % initial North position
+P.pe0    = 0;  % initial East position
+P.pd0    = 0;  % initial Down position (negative altitude)
+P.u0     = x_trim(4);  % initial velocity along body x-axis
+P.v0     = x_trim(5);  % initial velocity along body y-axis
+P.w0     = x_trim(6);  % initial velocity along body z-axis
+P.phi0   = x_trim(7);  % initial roll angle
+P.theta0 = x_trim(8);  % initial pitch angle
+P.psi0   = x_trim(9);  % initial yaw angle
+P.p0     = x_trim(10);  % initial body frame roll rate
+P.q0     = x_trim(11);  % initial body frame pitch rate
+P.r0     = x_trim(12);  % initial body frame yaw rate
+
+% compute different transfer functions
+[T_phi_delta_a,T_chi_phi,T_theta_delta_e,T_h_theta,T_h_Va,T_Va_delta_t,T_Va_theta,T_v_delta_r]...
+    = compute_tf_model(x_trim,u_trim,P);
+
+% linearize the equations of motion around trim conditions
+[A_lon, B_lon, A_lat, B_lat] = compute_ss_model('mavsim_trim',x_trim,u_trim);
+
+
+%% LQR Gains 
+C_h = [ 0 0 0 0 1 ];          % h = -pd, A_lon sırasına göre
+A_lon_ext = [ A_lon          zeros(5,1) ;
+              -C_h            0         ];   % 6×6
+B_lon_ext = [ B_lon ;
+              zeros(1, size(B_lon,2)) ];   % 6×2
+
+Q_lon = diag([ 2 2 120 60 5  300 ]);   % son eleman ∫h
+R_lon = diag([ 8 , 2 ]); 
+
+%%
+Q_lat = diag([120   15   80   500   400]);   % v p r φ ψ
+R_lat = diag([ 0.8   0.4]);                     % δa, δr
+
+P.K_lon  = lqr(A_lon_ext,B_lon_ext, Q_lon,R_lon);
+P.K_lat = lqr(A_lat,B_lat,Q_lat,R_lat);
+
+%P.K_lon      = K_lon_ext(1,1:5);  % δe
+%P.Ki_h       = K_lon_ext(1,6);    % ∫h  (sadece δe satırında ≈ -20)
+
+P.x_trim_lon = [x_trim(4) ; x_trim(6) ; x_trim(11) ; x_trim(8) ; -x_trim(3) ; 0];
+P.x_trim_lat = [x_trim(5) ; x_trim(10); x_trim(12); x_trim(7);  x_trim(9);  0];
+P.u_trim_lon = u_trim([1 4]);    % δ_e0  δ_t0
+P.u_trim_lat = u_trim([2 3]);    % δ_a0  δ_r0
+
+
+%%
+% gain on dirty derivative
+P.tau = 5;
+
+% autopilot gains
+% altitude parameters and gains
+P.altitude_take_off_zone = 30;
+P.altitude_hold_zone = 10;
+
+P.delta_e_max =  25*pi/180;   % Elevatör +25°
+P.delta_e_min = -25*pi/180;   % Elevatör –25°
+
+P.delta_a_max =  25*pi/180;   % Aileron  ±30°
+P.delta_a_min = -25*pi/180;
+
+P.delta_r_max =  20*pi/180;   % Rudder 
+P.delta_r_min = -20*pi/180;
+
+P.gps_Ts = 1;           % GPS    
+
+% %  IMU  
+% P.gravity = 9.81;
+% P.mass    = 1.56;
+% 
+% %  GPS  
+% P.sig_gps_n = 2.5;      % [m]
+% P.sig_gps_e = 2.5;
+% P.sig_gps_h = 4.0;
+% 
+% %EKF noise
+% q_p     = (0.1)^2;           % m^2
+% q_v     = (0.1)^2;           % hız [m^2/s^2]
+% q_ang   = (1*pi/180)^2;      % rad^2
+% q_omega = (0.01)^2;          % (rad/s)^2
+% 
+% P.Q_imu = diag([ ...
+%     q_p, q_p, q_p, ...       
+%     q_v, q_v, q_v, ...      
+%     q_ang, q_ang, q_ang, ... 
+%     q_omega, q_omega, q_omega]); 
+% 
+% sigma_gps_pn  = 3;            %North [m]
+% sigma_gps_pe  = 3;            %  East  [m]
+% sigma_gps_h   = 1;            % yükseklik   [m]
+% sigma_gps_Vg  = 0.1;          % yer hızı   [m/s]
+% sigma_gps_chi = deg2rad(2);   % sapma açısı [rad]
+% 
+% P.R_gps = diag([ ...
+%     sigma_gps_pn^2, ...
+%     sigma_gps_pe^2, ...
+%     sigma_gps_h^2,  ...
+%     sigma_gps_Vg^2,...
+%     sigma_gps_chi^2 ]);
+% Yerçekimi ve araç kütlesi
+
+% Yerçekimi ve araç kütlesi
+P.gravity = 9.81;      % [m/s²]
+P.mass    = 1.56;      % [kg]
+
+%% ------ GPS ölçüm gürültüleri (ölçülen σ) ------
+P.sig_gps_n   = 200;       
+P.sig_gps_e   = 0.50;         
+P.sig_gps_h   = 0.30;         
+P.sig_gps_Vg  = 0.05;       
+P.sig_gps_chi = deg2rad(1);
+
+% GPS ölçüm kovaryans
+P.R_gps = diag([ ...
+    P.sig_gps_n^2, ...
+    P.sig_gps_e^2, ...
+    P.sig_gps_h^2, ...
+    P.sig_gps_Vg^2,...
+    P.sig_gps_chi^2 ]);
+
+%% EKF process
+%
+q_p   = (0.1)^2;  
+
+q_v   = mean([0.300,0.296,0.296]).^2; 
+
+q_ang = (1*pi/180)^2;      
+
+q_omega = mean([0.0050,0.0058,0.0050]).^2; 
+
+P.Q_imu = diag([ ...
+    q_p,     q_p,     q_p, ...      % pn, pe, pd
+    q_v,     q_v,     q_v, ...      % u,  v,  w
+    q_ang,   q_ang,   q_ang, ...    % φ,  θ,  ψ
+    q_omega, q_omega, q_omega ]);   % p,  q,  r
+
+
+computeGains;
+
